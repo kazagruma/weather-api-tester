@@ -33,12 +33,35 @@ async function createSummary(request, env) {
   return json({ id, created_at: now }, 201);
 }
 
+async function getSummary(id, request, env) {
+  const owner = ownerFrom(request);
+  if (!owner) return json({ error: "保存場所を確認できませんでした。ページを再読み込みしてください。" }, 401);
+  const row = await env.DB.prepare("SELECT id, input_text, output_text, summary_type, title, category, summary_date, tags, created_at, updated_at FROM summaries WHERE id = ? AND owner_key = ?").bind(id, owner).first();
+  return row ? json({ item: row }) : json({ error: "この要約は見つかりませんでした。" }, 404);
+}
+
+async function updateSummary(id, request, env) {
+  const owner = ownerFrom(request);
+  if (!owner) return json({ error: "保存場所を確認できませんでした。ページを再読み込みしてください。" }, 401);
+  let data;
+  try { data = await request.json(); } catch { return json({ error: "保存内容を読み取れませんでした。" }, 400); }
+  const input = clean(data.input_text, 30000), output = clean(data.output_text, 30000), type = clean(data.summary_type, 20);
+  if (!input || !output || !["short", "bullets", "detailed"].includes(type)) return json({ error: "保存する要約の内容を確認してください。" }, 400);
+  const title = clean(data.title, 160), category = clean(data.category, 80), date = clean(data.summary_date, 10), tags = clean(data.tags, 240);
+  if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({ error: "日付の形式を確認してください。" }, 400);
+  const result = await env.DB.prepare("UPDATE summaries SET input_text = ?, output_text = ?, summary_type = ?, title = ?, category = ?, summary_date = ?, tags = ?, updated_at = ? WHERE id = ? AND owner_key = ?").bind(input, output, type, title, category, date || null, tags, new Date().toISOString(), id, owner).run();
+  return result.meta.changes ? json({ id }) : json({ error: "この要約は見つかりませんでした。" }, 404);
+}
+
 export default {
   async fetch(request, env) {
     const path = new URL(request.url).pathname;
     try {
       if (path === "/api/summaries" && request.method === "GET") return await listSummaries(request, env);
       if (path === "/api/summaries" && request.method === "POST") return await createSummary(request, env);
+      const match = path.match(/^\/api\/summaries\/([a-f0-9-]{36})$/i);
+      if (match && request.method === "GET") return await getSummary(match[1], request, env);
+      if (match && request.method === "PUT") return await updateSummary(match[1], request, env);
       if (path.startsWith("/api/")) return json({ error: "見つかりませんでした。" }, 404);
       return env.ASSETS.fetch(request);
     } catch (error) {
